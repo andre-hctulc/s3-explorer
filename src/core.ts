@@ -1,22 +1,24 @@
 import {
     _Object,
     CopyObjectCommand,
+    CopyObjectCommandInput,
     DeleteObjectCommand,
     GetObjectCommand,
+    GetObjectCommandInput,
+    GetObjectCommandOutput,
     HeadObjectCommand,
+    HeadObjectCommandInput,
+    HeadObjectCommandOutput,
     ListObjectsCommand,
+    ListObjectsCommandInput,
+    ListObjectsCommandOutput,
     PutObjectCommand,
     PutObjectCommandInput,
+    S3Client,
+    S3ClientConfig,
 } from "@aws-sdk/client-s3";
-import { AWS_BUCKET, s3client } from "./aws";
 import { Readable } from "stream";
-import { cache } from "react";
-import { z } from "zod";
-import { InterParams, SupportedLanguage } from "./internationalization";
-import { objIsHidden } from "@/utils/utils";
 
-// Apparently the stream parameter should be of type Readable|ReadableStream|Blob
-// The latter 2 don't seem to exist anywhere.
 async function streamToString(stream: Readable): Promise<string> {
     return await new Promise((resolve, reject) => {
         const chunks: Uint8Array[] = [];
@@ -26,139 +28,148 @@ async function streamToString(stream: Readable): Promise<string> {
     });
 }
 
-const s3Key = (objKey: string, lang: SupportedLanguage) => (lang === "en" ? objKey : lang + "/" + objKey);
-
-interface FetchObjectOptions {
-    filter?: (value: _Object, index: number, array: _Object[]) => boolean;
-    showHidden?: boolean;
-    interParams: InterParams | null;
-}
-
-/**
- * // TODO load range of objects
- */
-export const fetchObjects = cache(async (options: FetchObjectOptions) => {
-    const command = new ListObjectsCommand({
-        Bucket: AWS_BUCKET,
-        MaxKeys: 20,
-    });
-    const s3response = await s3client.send(command);
-    const contents = s3response.Contents || [];
-    const filtered = contents.filter((obj) => {
-        if (!obj.Key) return false;
-        // Apply language filter
-        if (
-            options.interParams?.lang &&
-            options.interParams.lang !== "en" &&
-            !obj.Key.startsWith(options.interParams!.lang + "/")
-        )
-            return false;
-        // Apply custom filter
-        if (options.filter && !options.filter(obj, 0, contents)) return false;
-        // Hidden files are those that end with a $ or $.<file_extension>
-        if (!options.showHidden && objIsHidden(obj.Key)) return false;
-        return true;
-    });
-
-    return filtered;
-});
-
-export const fetchObject = cache(async (key: string) => {
-    const command = new GetObjectCommand({
-        Bucket: AWS_BUCKET,
-        Key: key,
-    });
-    const s3response = await s3client.send(command);
-
-    return s3response;
-});
-
-export const fetchObjectMetadata = cache(async (key: string) => {
-    const command = new HeadObjectCommand({
-        Bucket: AWS_BUCKET,
-        Key: key,
-    });
-    const s3response = await s3client.send(command);
-
-    return s3response;
-});
-
-export const fetchObjectText = cache(async (key: string) => {
-    const command = new GetObjectCommand({
-        Bucket: AWS_BUCKET,
-        Key: key,
-    });
-    const s3response = await s3client.send(command);
-
-    if (!s3response.Body) return "";
-
-    return await streamToString(s3response.Body as Readable);
-});
-
-export function deleteObject(key: string) {
-    const command = new DeleteObjectCommand({
-        Bucket: AWS_BUCKET,
-        Key: key,
-    });
-    return s3client.send(command);
-}
-
-export async function putObject(
-    key: string,
-    data: string | Buffer | Uint8Array | Readable,
-    input?: Partial<PutObjectCommandInput>
-) {
-    if (key.startsWith("/")) throw new Error("Key cannot start with '/'");
-    const command = new PutObjectCommand({
-        ...input,
-        Bucket: AWS_BUCKET,
-        Key: key,
-        Body: data,
-        Metadata: parseMetadata({
-            // force last order
-            $order: new Date().getTime(),
-            $show: false,
-        } as CustomObjMetadata),
-    });
-    return s3client.send(command);
-}
-
-const CustomObjMetadataSchema = z.object({
-    $order: z.number().optional(),
-});
-
-export type CustomObjMetadata = z.infer<typeof CustomObjMetadataSchema>;
-
-function parseMetadata(metadata: unknown): Record<string, string> {
-    const parsedMetadata = CustomObjMetadataSchema.optional().parse(metadata);
-    return Object.entries(parsedMetadata || {}).reduce((acc, [key, value]) => {
+function parseMetadata(metadata: Record<string, any>): Record<string, string> {
+    if (!metadata || typeof metadata !== "object") return {};
+    return Object.entries(metadata || {}).reduce((acc, [key, value]) => {
         if (value === undefined) return acc;
         acc[key] = value.toString();
         return acc;
     }, {} as Record<string, string>);
 }
 
+interface FetchHeadesOptions {
+    filter?: (value: _Object, index: number, array: _Object[]) => boolean;
+}
+
+type GetObjectCommandOutputBody = Exclude<GetObjectCommandOutput["Body"], undefined> | null;
+
+type S3ConnectionConfig<M extends object = Record<string, string>> = {
+    client: S3ClientConfig | S3Client;
+    mergeMetadata?: (m1: Partial<M>, m2: Partial<M>) => M;
+};
+
 /**
- * Rename an o bject or update it's metadata.
+ * @template M Metadata
  */
-export async function updateObject(oldKey: string, newKey: string, newMetadata?: Partial<CustomObjMetadata>) {
-    /*
-    AWS S3 object metadata cannot be mofified directly, so we need to copy the object to a new key
-    */
+export class S3Connection<M extends object = Record<string, string>> {
+    readonly bucketName: string;
+    private _client: S3Client;
+    private _config: S3ConnectionConfig<M>;
 
-    if (!newKey) throw new Error("newKey is required");
+    constructor(bucketName: string, config: S3ConnectionConfig<M>) {
+        this.bucketName = bucketName;
+        this._config = config;
+        this._client = config.client instanceof S3Client ? config.client : new S3Client(config.client);
+    }
 
-    const metadata = await fetchObjectMetadata(oldKey);
-    const mergedNewMetadata = { ...metadata.Metadata, ...parseMetadata(newMetadata) };
-    const cmd = new CopyObjectCommand({
-        Bucket: AWS_BUCKET,
-        CopySource: `${AWS_BUCKET}/${oldKey}`,
-        // rename
-        Key: newKey,
-        // modify metadata
-        Metadata: mergedNewMetadata,
-        MetadataDirective: "REPLACE",
-    });
-    await s3client.send(cmd);
-    if (oldKey !== newKey) await deleteObject(oldKey);
+    // -- Objects
+
+    async getRaw(key: string, input?: Partial<GetObjectCommandInput>): Promise<GetObjectCommandOutput> {
+        const command = new GetObjectCommand({
+            Bucket: this.bucketName,
+            Key: key,
+            ...input,
+        });
+        const s3response = await this._client.send(command);
+        return s3response;
+    }
+
+    async get(key: string): Promise<GetObjectCommandOutputBody> {
+        const s3response = await this.getRaw(key);
+        return s3response.Body || null;
+    }
+
+    async getText(key: string) {
+        const s3response = await this.getRaw(key);
+        if (!s3response.Body) return "";
+        return await streamToString(s3response.Body as Readable);
+    }
+
+    async putRaw(key: string, input?: Partial<PutObjectCommandInput>) {
+        const command = new PutObjectCommand({
+            Bucket: this.bucketName,
+            Key: key,
+            ...input,
+        });
+        return this._client.send(command);
+    }
+
+    async put(key: string, data: string | Buffer | Uint8Array | Readable) {
+        await this.putRaw(key, { Body: data });
+    }
+
+    async delRaw(key: string) {
+        const command = new DeleteObjectCommand({
+            Bucket: this.bucketName,
+            Key: key,
+        });
+        return this._client.send(command);
+    }
+
+    async del(key: string) {
+        await this.delRaw(key);
+    }
+
+    async copyRaw(oldKey: string, newKey: string, params?: Partial<CopyObjectCommandInput>) {
+        const cmd = new CopyObjectCommand({
+            Bucket: this.bucketName,
+            CopySource: `${this.bucketName}/${oldKey}`,
+            // rename
+            Key: newKey,
+            ...params,
+        });
+        return this._client.send(cmd);
+    }
+
+    async rename(oldKey: string, newKey: string) {
+        if (oldKey === newKey) return;
+        await this.copyRaw(oldKey, newKey);
+        await this.delRaw(oldKey);
+    }
+
+    // -- Head
+
+    async getHeadRaw(key: string, input?: Partial<HeadObjectCommandInput>): Promise<HeadObjectCommandOutput> {
+        const command = new HeadObjectCommand({
+            Bucket: this.bucketName,
+            Key: key,
+            ...input,
+        });
+        return this._client.send(command);
+    }
+
+    async getHead(key: string): Promise<Partial<M>> {
+        const s3response = await this.getHeadRaw(key);
+        return (s3response.Metadata as Partial<M> | undefined) || {};
+    }
+
+    async getHeadsRaw(input?: Partial<ListObjectsCommandInput>): Promise<ListObjectsCommandOutput> {
+        const command = new ListObjectsCommand({
+            Bucket: this.bucketName,
+            MaxKeys: 20,
+            ...input,
+        });
+        return this._client.send(command);
+    }
+
+    async getHeads(options: FetchHeadesOptions) {
+        const s3response = await this.getHeadsRaw();
+        const contents = s3response.Contents || [];
+        const filtered = contents.filter((obj) => {
+            if (!obj.Key) return false;
+            // Apply custom filter
+            if (options.filter && !options.filter(obj, 0, contents)) return false;
+            return true;
+        });
+
+        return filtered;
+    }
+
+    async putHead(key: string, metadata: Partial<M>) {
+        const currentMetadeata = await this.getHead(key);
+        const newMetadata = this._config.mergeMetadata
+            ? this._config.mergeMetadata(currentMetadeata, metadata)
+            : metadata;
+        await this.copyRaw(key, key, { MetadataDirective: "REPLACE", Metadata: parseMetadata(newMetadata) });
+    }
 }
