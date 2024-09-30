@@ -2,3 +2,4 @@ node_modules
 dist
 *.code-workspace
 .DS_Store
+.env.local

@@ -37,7 +37,7 @@ function parseMetadata(metadata: Record<string, any>): Record<string, string> {
     }, {} as Record<string, string>);
 }
 
-interface FetchHeadesOptions {
+interface FetchHeadsOptions {
     filter?: (value: _Object, index: number, array: _Object[]) => boolean;
 }
 
@@ -152,7 +152,7 @@ export class S3Connection<M extends object = Record<string, string>> {
         return this._client.send(command);
     }
 
-    async getHeads(options: FetchHeadesOptions) {
+    async getHeads(options: FetchHeadsOptions) {
         const s3response = await this.getHeadsRaw();
         const contents = s3response.Contents || [];
         const filtered = contents.filter((obj) => {
@@ -166,9 +166,9 @@ export class S3Connection<M extends object = Record<string, string>> {
     }
 
     async putHead(key: string, metadata: Partial<M>) {
-        const currentMetadeata = await this.getHead(key);
+        const currentMetadata = await this.getHead(key);
         const newMetadata = this._config.mergeMetadata
-            ? this._config.mergeMetadata(currentMetadeata, metadata)
+            ? this._config.mergeMetadata(currentMetadata, metadata)
             : metadata;
         await this.copyRaw(key, key, { MetadataDirective: "REPLACE", Metadata: parseMetadata(newMetadata) });
     }
