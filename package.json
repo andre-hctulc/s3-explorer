@@ -1,5 +1,5 @@
 {
-    "name": "s3-explorer",
+    "name": "@andre-hctulc/s3-explorer",
     "version": "0.0.1",
     "main": "index.js",
     "scripts": {
@@ -8,9 +8,9 @@
         "tc:watch": "tsc --noEmit --watch"
     },
     "author": "André Thomas",
-    "license": "ISC",
+    "license": "MIT",
     "description": "",
-    "devDependencies": {
-        "@aws-sdk/client-s3": "^3.658.1"
+    "dependencies": {
+        "@aws-sdk/client-s3": "^3.682.0"
     }
 }

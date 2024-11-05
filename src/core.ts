@@ -8,16 +8,15 @@ import {
     GetObjectCommandOutput,
     HeadObjectCommand,
     HeadObjectCommandInput,
-    HeadObjectCommandOutput,
     ListObjectsCommand,
     ListObjectsCommandInput,
-    ListObjectsCommandOutput,
     PutObjectCommand,
     PutObjectCommandInput,
     S3Client,
     S3ClientConfig,
 } from "@aws-sdk/client-s3";
-import { Readable } from "stream";
+import type { Readable } from "stream";
+import type { Command } from "@smithy/smithy-client";
 
 async function streamToString(stream: Readable): Promise<string> {
     return await new Promise((resolve, reject) => {
@@ -48,112 +47,156 @@ type S3ConnectionConfig<M extends object = Record<string, string>> = {
     mergeMetadata?: (m1: Partial<M>, m2: Partial<M>) => M;
 };
 
+type AnyCommand = Command<any, any, any, any>;
+
+interface SignOptions {
+    /**
+     * Seconds until the signed URL expires.
+     * @default 3600
+     */
+    expiresIn?: number;
+}
+
 /**
  * @template M Metadata
  */
-export class S3Connection<M extends object = Record<string, string>> {
+export class BucketConnection<M extends object = Record<string, string>> {
     readonly bucketName: string;
-    private _client: S3Client;
+    readonly client: S3Client;
     private _config: S3ConnectionConfig<M>;
 
     constructor(bucketName: string, config: S3ConnectionConfig<M>) {
         this.bucketName = bucketName;
         this._config = config;
-        this._client = config.client instanceof S3Client ? config.client : new S3Client(config.client);
+        this.client = config.client instanceof S3Client ? config.client : new S3Client(config.client);
+    }
+
+    send(command: AnyCommand) {
+        return this.client.send(command);
+    }
+
+    uri() {
+        return BucketConnection.uri(this.bucketName);
+    }
+
+    /**
+     * @returns s3 uri (s3://bucketName/key)
+     */
+    static uri(bucketName: string, key?: string) {
+        let uri = `s3://${bucketName}`;
+        if (key) uri += `/${key}`;
+        return uri;
+    }
+
+    /**
+     * Parses s3 uris (s3://bucketName/key)
+     */
+    static parseUri(uri: string): { bucketName: string; key?: string } | null {
+        const match = uri.match(/^s3:\/\/([^/]+)\/?(.*)$/);
+        if (!match) return null;
+        const [, bucketName, key] = match;
+        return { bucketName, key: key || undefined };
     }
 
     // -- Objects
 
-    async getRaw(key: string, input?: Partial<GetObjectCommandInput>): Promise<GetObjectCommandOutput> {
-        const command = new GetObjectCommand({
+    getCommand(key: string, input?: Partial<GetObjectCommandInput>): GetObjectCommand {
+        return new GetObjectCommand({
             Bucket: this.bucketName,
             Key: key,
             ...input,
         });
-        const s3response = await this._client.send(command);
-        return s3response;
     }
 
     async get(key: string): Promise<GetObjectCommandOutputBody> {
-        const s3response = await this.getRaw(key);
+        const command = await this.getCommand(key);
+        const s3response = await this.client.send(command);
         return s3response.Body || null;
     }
 
     async getText(key: string) {
-        const s3response = await this.getRaw(key);
+        const command = await this.getCommand(key);
+        const s3response = await this.client.send(command);
         if (!s3response.Body) return "";
         return await streamToString(s3response.Body as Readable);
     }
 
-    async putRaw(key: string, input?: Partial<PutObjectCommandInput>) {
-        const command = new PutObjectCommand({
+    putCommand(key: string, input?: Partial<PutObjectCommandInput>): PutObjectCommand {
+        return new PutObjectCommand({
             Bucket: this.bucketName,
             Key: key,
             ...input,
         });
-        return this._client.send(command);
     }
 
-    async put(key: string, data: string | Buffer | Uint8Array | Readable) {
-        await this.putRaw(key, { Body: data });
+    /**
+     * @param data Blobs are converted to Buffers.
+     */
+    async put(key: string, data: string | Buffer | Uint8Array | Readable | Blob): Promise<void> {
+        // nodejs env does not support Blob, so we convert it to Buffer
+        if (data instanceof Blob) data = Buffer.from(await data.arrayBuffer());
+        const command = this.putCommand(key, { Body: data });
+        await this.client.send(command);
     }
 
-    async delRaw(key: string) {
-        const command = new DeleteObjectCommand({
+    deleteCommand(key: string, input?: Partial<DeleteObjectCommand>) {
+        return new DeleteObjectCommand({
             Bucket: this.bucketName,
             Key: key,
+            ...input,
         });
-        return this._client.send(command);
     }
 
-    async del(key: string) {
-        await this.delRaw(key);
+    async del(key: string): Promise<void> {
+        const command = this.deleteCommand(key);
+        await this.client.send(command);
     }
 
-    async copyRaw(oldKey: string, newKey: string, params?: Partial<CopyObjectCommandInput>) {
-        const cmd = new CopyObjectCommand({
+    copyCommand(oldKey: string, newKey: string, input?: Partial<CopyObjectCommandInput>): CopyObjectCommand {
+        return new CopyObjectCommand({
             Bucket: this.bucketName,
             CopySource: `${this.bucketName}/${oldKey}`,
             // rename
             Key: newKey,
-            ...params,
+            ...input,
         });
-        return this._client.send(cmd);
     }
 
-    async rename(oldKey: string, newKey: string) {
+    async rename(oldKey: string, newKey: string): Promise<void> {
         if (oldKey === newKey) return;
-        await this.copyRaw(oldKey, newKey);
-        await this.delRaw(oldKey);
+        const copyCommand = this.copyCommand(oldKey, newKey);
+        await this.client.send(copyCommand);
+        const delCommand = this.deleteCommand(oldKey);
+        await this.client.send(delCommand);
     }
 
     // -- Head
 
-    async getHeadRaw(key: string, input?: Partial<HeadObjectCommandInput>): Promise<HeadObjectCommandOutput> {
-        const command = new HeadObjectCommand({
+    getHeadCommand(key: string, input?: Partial<HeadObjectCommandInput>): HeadObjectCommand {
+        return new HeadObjectCommand({
             Bucket: this.bucketName,
             Key: key,
             ...input,
         });
-        return this._client.send(command);
     }
 
     async getHead(key: string): Promise<Partial<M>> {
-        const s3response = await this.getHeadRaw(key);
+        const command = this.getHeadCommand(key);
+        const s3response = await this.client.send(command);
         return (s3response.Metadata as Partial<M> | undefined) || {};
     }
 
-    async getHeadsRaw(input?: Partial<ListObjectsCommandInput>): Promise<ListObjectsCommandOutput> {
-        const command = new ListObjectsCommand({
+    getHeadsCommand(input?: Partial<ListObjectsCommandInput>): ListObjectsCommand {
+        return new ListObjectsCommand({
             Bucket: this.bucketName,
             MaxKeys: 20,
             ...input,
         });
-        return this._client.send(command);
     }
 
     async getHeads(options: FetchHeadsOptions) {
-        const s3response = await this.getHeadsRaw();
+        const command = this.getHeadsCommand();
+        const s3response = await this.client.send(command);
         const contents = s3response.Contents || [];
         const filtered = contents.filter((obj) => {
             if (!obj.Key) return false;
@@ -170,6 +213,9 @@ export class S3Connection<M extends object = Record<string, string>> {
         const newMetadata = this._config.mergeMetadata
             ? this._config.mergeMetadata(currentMetadata, metadata)
             : metadata;
-        await this.copyRaw(key, key, { MetadataDirective: "REPLACE", Metadata: parseMetadata(newMetadata) });
+        await this.copyCommand(key, key, {
+            MetadataDirective: "REPLACE",
+            Metadata: parseMetadata(newMetadata),
+        });
     }
 }
