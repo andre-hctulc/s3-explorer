@@ -128,10 +128,10 @@ export class BucketConnection<M extends object = Record<string, string>> {
     ): Promise<PutObjectCommand> {
         let contentType: string | undefined;
 
-        // nodejs env does not support Blob, so we convert it to Buffer
-        if (data instanceof Blob) {
+        // Blob is not support in node env, so we convert it to Buffer
+        if (data instanceof Blob && typeof window === "undefined") {
+            contentType = data.type;
             data = Buffer.from(await data.arrayBuffer());
-            if ("type" in data) contentType = data.type as string;
         }
 
         return new PutObjectCommand({
