@@ -1,4 +1,4 @@
 test
 src
 index.ts
-.env.local
+.env*.local

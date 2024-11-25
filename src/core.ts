@@ -18,24 +18,6 @@ import {
 import type { Readable } from "stream";
 import type { Command } from "@smithy/smithy-client";
 
-async function streamToString(stream: Readable): Promise<string> {
-    return await new Promise((resolve, reject) => {
-        const chunks: Uint8Array[] = [];
-        stream.on("data", (chunk) => chunks.push(chunk));
-        stream.on("error", reject);
-        stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    });
-}
-
-function parseMetadata(metadata: Record<string, any>): Record<string, string> {
-    if (!metadata || typeof metadata !== "object") return {};
-    return Object.entries(metadata || {}).reduce((acc, [key, value]) => {
-        if (value === undefined) return acc;
-        acc[key] = value.toString();
-        return acc;
-    }, {} as Record<string, string>);
-}
-
 interface FetchHeadsOptions {
     filter?: (value: _Object, index: number, array: _Object[]) => boolean;
 }
@@ -48,6 +30,20 @@ type S3ConnectionConfig<M extends object = Record<string, string>> = {
 };
 
 type AnyCommand = Command<any, any, any, any>;
+
+interface UrlOptions {
+    key?: string;
+    protocol?: string;
+    accessKey?: string;
+    secretKey?: string;
+}
+
+interface ParsedUrl {
+    bucketName: string;
+    key: string | undefined;
+    accessKey: string | undefined;
+    secretKey: string | undefined;
+}
 
 /**
  * @template M Metadata
@@ -69,38 +65,50 @@ export class BucketConnection<M extends object = Record<string, string>> {
 
     /**
      * Creates a URL for this bucket with optional key.
-     * @example `https://example-bucket.s3.amazonaws.com/optional/path/to/object`
+     * @example `https://<BUCKET_NAME>.s3.amazonaws.com/optional/path/to/object`
      */
-    url() {
-        return BucketConnection.url(this.bucketName);
+    url(options?: UrlOptions) {
+        return BucketConnection.url(this.bucketName, options);
     }
 
     /**
      * Creates a URL for a bucket with optional key.
-     * @example `https://example-bucket.s3.amazonaws.com/optional/path/to/object`
+     * @example `https://<ACCESS_KEY>:<SECRET_KEY>@<BUCKET_NAME>.s3.amazonaws.com/optional/path/to/object`
      */
-    static url(bucketName: string, options?: { key?: string; protocol?: string }) {
-        let uri = `${options?.protocol || "https:"}//${bucketName}.s3.amazonaws.com`;
+    static url(bucketName: string, options?: UrlOptions) {
+        let uri = options?.protocol || "https:";
+
+        if (options?.accessKey && options?.secretKey) {
+            uri += `//${options.accessKey}:${options.secretKey}@`;
+        }
+
+        uri += `//${bucketName}.s3.amazonaws.com`;
+
         if (options?.key) uri += `/${options.key}`;
+
         return uri;
     }
 
     /**
      * Parses a URL to get the bucket name and key.
      */
-    static parseUrl(url: string): { bucketName: string; key?: string } | null {
-        const regex = /^.+:\/\/([^\/]+)\.s3\.amazonaws\.com(\/.+)?$/;
+    static parseUrl(url: string): ParsedUrl | null {
+        // Regular expression to match S3 URL with credentials
+        const regex = /^https:\/\/([^:]+):([^@]+)@([^\/]+)\.s3\.amazonaws\.com(\/.+)?$/;
         const match = url.match(regex);
 
         if (!match) return null;
 
-        const bucketName = match[1];
-        const key = match[2]?.substring(1) || undefined;
+        // Extract access key, secret key, bucket name, and key from the match
+        const accessKey = match[1];
+        const secretKey = match[2];
+        const bucketName = match[3];
+        const key = match[4]?.substring(1) || undefined;
 
-        return { bucketName, key };
+        return { accessKey, secretKey, bucketName, key };
     }
 
-    // -- Objects
+    // #### Objects ####
 
     getCommand(key: string, input?: Partial<GetObjectCommandInput>): GetObjectCommand {
         return new GetObjectCommand({
@@ -116,11 +124,11 @@ export class BucketConnection<M extends object = Record<string, string>> {
         return s3response.Body || null;
     }
 
-    async getText(key: string) {
+    async getText(key: string): Promise<string | null> {
         const command = await this.getCommand(key);
         const s3response = await this.client.send(command);
-        if (!s3response.Body) return "";
-        return await streamToString(s3response.Body as Readable);
+        if (!s3response.Body) return null;
+        return this.streamToString(s3response.Body as Readable);
     }
 
     async putCommand(
@@ -184,7 +192,7 @@ export class BucketConnection<M extends object = Record<string, string>> {
         await this.client.send(delCommand);
     }
 
-    // -- Head
+    // #### Head ####
 
     getHeadCommand(key: string, input?: Partial<HeadObjectCommandInput>): HeadObjectCommand {
         return new HeadObjectCommand({
@@ -224,12 +232,35 @@ export class BucketConnection<M extends object = Record<string, string>> {
 
     async putHead(key: string, metadata: Partial<M>) {
         const currentMetadata = await this.getHead(key);
+
         const newMetadata = this._config.mergeMetadata
             ? this._config.mergeMetadata(currentMetadata, metadata)
             : metadata;
+
         await this.copyCommand(key, key, {
             MetadataDirective: "REPLACE",
-            Metadata: parseMetadata(newMetadata),
+            Metadata: this.parseMetadata(newMetadata),
         });
+    }
+
+    // #### Utils ####
+
+    private streamToString(stream: Readable): Promise<string> {
+        return new Promise<string>((resolve, reject) => {
+            const chunks: Uint8Array[] = [];
+            stream.on("data", (chunk) => chunks.push(chunk));
+            stream.on("error", reject);
+            stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+        });
+    }
+
+    private parseMetadata(metadata: Record<string, any>): Record<string, string> {
+        if (!metadata || typeof metadata !== "object") return {};
+
+        return Object.entries(metadata || {}).reduce((acc, [key, value]) => {
+            if (value === undefined) return acc;
+            acc[key] = value.toString();
+            return acc;
+        }, {} as Record<string, string>);
     }
 }
