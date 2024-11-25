@@ -67,27 +67,37 @@ export class BucketConnection<M extends object = Record<string, string>> {
         return this.client.send(command);
     }
 
-    uri() {
-        return BucketConnection.uri(this.bucketName);
+    /**
+     * Creates a URL for this bucket with optional key.
+     * @example `https://example-bucket.s3.amazonaws.com/optional/path/to/object`
+     */
+    url() {
+        return BucketConnection.url(this.bucketName);
     }
 
     /**
-     * @returns s3 uri (s3://bucketName/key)
+     * Creates a URL for a bucket with optional key.
+     * @example `https://example-bucket.s3.amazonaws.com/optional/path/to/object`
      */
-    static uri(bucketName: string, key?: string) {
-        let uri = `s3://${bucketName}`;
-        if (key) uri += `/${key}`;
+    static url(bucketName: string, options?: { key?: string; protocol?: string }) {
+        let uri = `${options?.protocol || "https:"}//${bucketName}.s3.amazonaws.com`;
+        if (options?.key) uri += `/${options.key}`;
         return uri;
     }
 
     /**
-     * Parses s3 uris (s3://bucketName/key)
+     * Parses a URL to get the bucket name and key.
      */
-    static parseUri(uri: string): { bucketName: string; key?: string } | null {
-        const match = uri.match(/^s3:\/\/([^/]+)\/?(.*)$/);
+    static parseUrl(url: string): { bucketName: string; key?: string } | null {
+        const regex = /^.+:\/\/([^\/]+)\.s3\.amazonaws\.com(\/.+)?$/;
+        const match = url.match(regex);
+
         if (!match) return null;
-        const [, bucketName, key] = match;
-        return { bucketName, key: key || undefined };
+
+        const bucketName = match[1];
+        const key = match[2]?.substring(1) || undefined;
+
+        return { bucketName, key };
     }
 
     // -- Objects
