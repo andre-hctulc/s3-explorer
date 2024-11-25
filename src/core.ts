@@ -34,15 +34,18 @@ type AnyCommand = Command<any, any, any, any>;
 interface UrlOptions {
     key?: string;
     protocol?: string;
-    accessKey?: string;
-    secretKey?: string;
+    credentials?: {
+        accessKey: string;
+        secretKey: string;
+    };
 }
 
 interface ParsedUrl {
     bucketName: string;
-    key: string | undefined;
-    accessKey: string | undefined;
-    secretKey: string | undefined;
+    key: string | null;
+    accessKey: string | null;
+    secretKey: string | null;
+    protocol: string;
 }
 
 /**
@@ -76,15 +79,17 @@ export class BucketConnection<M extends object = Record<string, string>> {
      * @example `https://<ACCESS_KEY>:<SECRET_KEY>@<BUCKET_NAME>.s3.amazonaws.com/optional/path/to/object`
      */
     static url(bucketName: string, options?: UrlOptions) {
-        let uri = options?.protocol || "https:";
+        let uri = options?.protocol || "https://";
 
-        if (options?.accessKey && options?.secretKey) {
-            uri += `//${options.accessKey}:${options.secretKey}@`;
+        if (options?.credentials) {
+            uri += `${options.credentials.accessKey}:${options.credentials.secretKey}@`;
         }
 
-        uri += `//${bucketName}.s3.amazonaws.com`;
+        uri += `${bucketName}.s3.amazonaws.com`;
 
-        if (options?.key) uri += `/${options.key}`;
+        if (options?.key) {
+            uri += `/${options.key}`;
+        }
 
         return uri;
     }
@@ -93,19 +98,18 @@ export class BucketConnection<M extends object = Record<string, string>> {
      * Parses a URL to get the bucket name and key.
      */
     static parseUrl(url: string): ParsedUrl | null {
-        // Regular expression to match S3 URL with credentials
-        const regex = /^https:\/\/([^:]+):([^@]+)@([^\/]+)\.s3\.amazonaws\.com(\/.+)?$/;
+        const regex = /^(.+:\/\/)(?:([^:]+):([^@]+)@)?([^\/]+)\.s3\.amazonaws\.com(\/.*)?$/;
         const match = url.match(regex);
 
         if (!match) return null;
 
-        // Extract access key, secret key, bucket name, and key from the match
-        const accessKey = match[1];
-        const secretKey = match[2];
-        const bucketName = match[3];
-        const key = match[4]?.substring(1) || undefined;
+        const protocol = match[1];
+        const accessKey = match[2] || null;
+        const secretKey = match[3] || null;
+        const bucketName = match[4];
+        const key = match[5]?.substring(1) || null;
 
-        return { accessKey, secretKey, bucketName, key };
+        return { accessKey, secretKey, bucketName, key, protocol };
     }
 
     // #### Objects ####
