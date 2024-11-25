@@ -49,14 +49,6 @@ type S3ConnectionConfig<M extends object = Record<string, string>> = {
 
 type AnyCommand = Command<any, any, any, any>;
 
-interface SignOptions {
-    /**
-     * Seconds until the signed URL expires.
-     * @default 3600
-     */
-    expiresIn?: number;
-}
-
 /**
  * @template M Metadata
  */
