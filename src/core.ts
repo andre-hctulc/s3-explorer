@@ -113,10 +113,24 @@ export class BucketConnection<M extends object = Record<string, string>> {
         return await streamToString(s3response.Body as Readable);
     }
 
-    putCommand(key: string, input?: Partial<PutObjectCommandInput>): PutObjectCommand {
+    async putCommand(
+        key: string,
+        data: string | Buffer | Uint8Array | Readable | Blob,
+        input?: Partial<PutObjectCommandInput>
+    ): Promise<PutObjectCommand> {
+        let contentType: string | undefined;
+
+        // Blob is not support in node env, so we convert it to Buffer
+        if (data instanceof Blob && typeof window === "undefined") {
+            contentType = data.type;
+            data = Buffer.from(await data.arrayBuffer());
+        }
+
         return new PutObjectCommand({
             Bucket: this.bucketName,
             Key: key,
+            Body: data,
+            ContentType: contentType,
             ...input,
         });
     }
@@ -125,9 +139,7 @@ export class BucketConnection<M extends object = Record<string, string>> {
      * @param data Blobs are converted to Buffers.
      */
     async put(key: string, data: string | Buffer | Uint8Array | Readable | Blob): Promise<void> {
-        // nodejs env does not support Blob, so we convert it to Buffer
-        if (data instanceof Blob) data = Buffer.from(await data.arrayBuffer());
-        const command = this.putCommand(key, { Body: data });
+        const command = await this.putCommand(key, data);
         await this.client.send(command);
     }
 
