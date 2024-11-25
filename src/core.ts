@@ -161,7 +161,7 @@ export class BucketConnection<M extends object = Record<string, string>> {
         });
     }
 
-    async del(key: string): Promise<void> {
+    async delete(key: string): Promise<void> {
         const command = this.deleteCommand(key);
         await this.client.send(command);
     }
@@ -200,7 +200,7 @@ export class BucketConnection<M extends object = Record<string, string>> {
         return (s3response.Metadata as Partial<M> | undefined) || {};
     }
 
-    getHeadsCommand(input?: Partial<ListObjectsCommandInput>): ListObjectsCommand {
+    listHeadsCommand(input?: Partial<ListObjectsCommandInput>): ListObjectsCommand {
         return new ListObjectsCommand({
             Bucket: this.bucketName,
             MaxKeys: 20,
@@ -208,8 +208,8 @@ export class BucketConnection<M extends object = Record<string, string>> {
         });
     }
 
-    async getHeads(options: FetchHeadsOptions) {
-        const command = this.getHeadsCommand();
+    async listHeads(options: FetchHeadsOptions) {
+        const command = this.listHeadsCommand();
         const s3response = await this.client.send(command);
         const contents = s3response.Contents || [];
         const filtered = contents.filter((obj) => {
