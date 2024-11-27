@@ -188,6 +188,11 @@ export class BucketConnection<M extends object = Record<string, string>> {
         });
     }
 
+    async copy(oldKey: string, newKey: string): Promise<void> {
+        const command = this.copyCommand(oldKey, newKey);
+        await this.client.send(command);
+    }
+
     async rename(oldKey: string, newKey: string): Promise<void> {
         if (oldKey === newKey) return;
         const copyCommand = this.copyCommand(oldKey, newKey);
