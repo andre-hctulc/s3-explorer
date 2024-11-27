@@ -62,6 +62,33 @@ export class BucketConnection<M extends object = Record<string, string>> {
         this.client = config.client instanceof S3Client ? config.client : new S3Client(config.client);
     }
 
+    static fromUrl<M extends object = Record<string, string>>(
+        url: string,
+        config?: Partial<S3ConnectionConfig<M>>
+    ): BucketConnection<M> | null {
+        const parsed = BucketConnection.parseUrl(url);
+
+        if (!parsed) return null;
+
+        return new BucketConnection(parsed.bucketName, {
+            ...config,
+            client:
+                config?.client instanceof S3Client
+                    ? config.client
+                    : {
+                          ...config?.client,
+                          credentials:
+                              parsed.accessKey && parsed.secretKey
+                                  ? {
+                                        accessKeyId: parsed.accessKey,
+                                        secretAccessKey: parsed.secretKey,
+                                        ...config?.client?.credentials,
+                                    }
+                                  : config?.client?.credentials,
+                      },
+        });
+    }
+
     send(command: AnyCommand) {
         return this.client.send(command);
     }
