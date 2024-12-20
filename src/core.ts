@@ -15,7 +15,7 @@ import {
     S3Client,
     S3ClientConfig,
 } from "@aws-sdk/client-s3";
-import type { Readable } from "stream";
+import { Readable } from "stream";
 import type { Command } from "@smithy/smithy-client";
 
 interface FetchHeadsOptions {
@@ -149,17 +149,13 @@ export class BucketConnection<M extends object = Record<string, string>> {
         });
     }
 
+    /**
+     * Use `S3Connection.streamTo*` utils to convert the body to the desired format.
+     */
     async get(key: string): Promise<GetObjectCommandOutputBody> {
         const command = await this.getCommand(key);
         const s3response = await this.client.send(command);
         return s3response.Body || null;
-    }
-
-    async getText(key: string): Promise<string | null> {
-        const command = await this.getCommand(key);
-        const s3response = await this.client.send(command);
-        if (!s3response.Body) return null;
-        return this.streamToString(s3response.Body as Readable);
     }
 
     async putCommand(
@@ -281,12 +277,49 @@ export class BucketConnection<M extends object = Record<string, string>> {
 
     // #### Utils ####
 
-    private streamToString(stream: Readable): Promise<string> {
+    static async bodyToBuffer(body: GetObjectCommandOutputBody): Promise<Buffer> {
+        if (body instanceof Readable) {
+            return BucketConnection.streamToBuffer(body);
+        } else if (body instanceof Buffer) {
+            return Promise.resolve(body);
+        } else if (body instanceof Uint8Array) {
+            return Promise.resolve(Buffer.from(body));
+        } else if (body instanceof Blob) {
+            return Promise.resolve(Buffer.from(await body.arrayBuffer()));
+        } else {
+            return Promise.resolve(Buffer.from(""));
+        }
+    }
+
+    static async bodyToString(body: GetObjectCommandOutputBody): Promise<string> {
+        if (body instanceof Readable) {
+            return BucketConnection.streamToString(body);
+        } else if (body instanceof Buffer) {
+            return Promise.resolve(body.toString("utf-8"));
+        } else if (body instanceof Uint8Array) {
+            return Promise.resolve(Buffer.from(body).toString("utf-8"));
+        } else if (body instanceof Blob) {
+            return Promise.resolve((await body.text()) || "");
+        } else {
+            return Promise.resolve("");
+        }
+    }
+
+    static streamToString(stream: Readable): Promise<string> {
         return new Promise<string>((resolve, reject) => {
             const chunks: Uint8Array[] = [];
             stream.on("data", (chunk) => chunks.push(chunk));
             stream.on("error", reject);
             stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+        });
+    }
+
+    static streamToBuffer(stream: Readable): Promise<Buffer> {
+        return new Promise<Buffer>((resolve, reject) => {
+            const chunks: Uint8Array[] = [];
+            stream.on("data", (chunk) => chunks.push(chunk));
+            stream.on("error", reject);
+            stream.on("end", () => resolve(Buffer.concat(chunks)));
         });
     }
 
